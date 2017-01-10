@@ -4,8 +4,11 @@ import sys
 from six.moves import shlex_quote
 
 parser = argparse.ArgumentParser(description="Run commands")
-parser.add_argument('-w', '--num-workers', default=1, type=int,
-                    help="Number of workers")
+worker_group = parser.add_mutually_exclusive_group(required=True)
+worker_group.add_argument('-w', '--num-workers', default=1, type=int,
+                          help="Number of workers")
+worker_group.add_argument('--dist-workers',
+                          help='Execute on distributed workers (e.g. --dist-workers someaddr:2222,someaddr2:2222).')
 parser.add_argument('-r', '--remotes', default=None,
                     help='The address of pre-existing VNC servers and '
                          'rewarders to use (e.g. -r vnc://localhost:5900+15900,vnc://localhost:5901+15901).')
@@ -30,13 +33,18 @@ def new_cmd(session, name, cmd, mode, logdir, shell):
         return name, "nohup {} -c {} >{}/{}.{}.out 2>&1 & echo kill $! >>{}/kill.sh".format(shell, shlex_quote(cmd), logdir, session, name, logdir)
 
 
-def create_commands(session, num_workers, remotes, env_id, logdir, shell='bash', mode='tmux'):
+def create_commands(session, num_workers, dist_workers, remotes, env_id, logdir, shell='bash', mode='tmux'):
     # for launching the TF workers and for launching tensorboard
     base_cmd = [
         'CUDA_VISIBLE_DEVICES=',
         sys.executable, 'worker.py',
-        '--log-dir', logdir, '--env-id', env_id,
-        '--num-workers', str(num_workers)]
+        '--log-dir', logdir, '--env-id', env_id]
+
+    if dist_workers:
+        num_workers = len(dist_workers.split(','))
+        base_cmd += ['--dist-workers', dist_workers]
+    else:
+        base_cmd += ['--num-workers', str(num_workers)]
 
     if remotes is None:
         remotes = ["1"] * num_workers
@@ -45,9 +53,11 @@ def create_commands(session, num_workers, remotes, env_id, logdir, shell='bash',
         assert len(remotes) == num_workers
 
     cmds_map = [new_cmd(session, "ps", base_cmd + ["--job-name", "ps"], mode, logdir, shell)]
-    for i in range(num_workers):
-        cmds_map += [new_cmd(session,
-            "w-%d" % i, base_cmd + ["--job-name", "worker", "--task", str(i), "--remotes", remotes[i]], mode, logdir, shell)]
+
+    if not dist_workers:
+        for i in range(num_workers):
+            cmds_map += [new_cmd(session,
+                "w-%d" % i, base_cmd + ["--job-name", "worker", "--task", str(i), "--remotes", remotes[i]], mode, logdir, shell)]
 
     cmds_map += [new_cmd(session, "tb", ["tensorboard", "--logdir", logdir, "--port", "12345"], mode, logdir, shell)]
     if mode == 'tmux':
@@ -86,7 +96,8 @@ def create_commands(session, num_workers, remotes, env_id, logdir, shell='bash',
 
 def run():
     args = parser.parse_args()
-    cmds, notes = create_commands("a3c", args.num_workers, args.remotes, args.env_id, args.log_dir, mode=args.mode)
+    cmds, notes = create_commands("a3c", args.num_workers, args.dist_workers, args.remotes,
+                                  args.env_id, args.log_dir, mode=args.mode)
     if args.dry_run:
         print("Dry-run mode due to -n flag, otherwise the following commands would be executed:")
     else:
