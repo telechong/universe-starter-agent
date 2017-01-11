@@ -9,6 +9,7 @@ import time
 import os
 from a3c import A3C
 from envs import create_env
+from envs import config_universe_logging
 import distutils.version
 use_tf12_api = distutils.version.LooseVersion(tf.VERSION) >= distutils.version.LooseVersion('0.12.0')
 
@@ -99,6 +100,8 @@ Setting up Tensorflow for data parallel work
                         help='Execute on distributed tf (ps + worker) (e.g. --workers someaddr:2222,someaddr2:2222).')
 
     parser.add_argument('--log-dir', default="/tmp/pong", help='Log directory path')
+    parser.add_argument('--log-universe', default=False, action="store_true",
+                        help='Save universe log to /tmp/univese-<pid>')
     parser.add_argument('--env-id', default="PongDeterministic-v3", help='Environment id')
     parser.add_argument('-r', '--remotes', default=None,
                         help='References to environments to create (e.g. -r 20), '
@@ -107,6 +110,7 @@ Setting up Tensorflow for data parallel work
 
     args = parser.parse_args()
 
+    config_universe_logging(enable_logfile=args.log_universe)
     workers = args.workers.split(',')
     num_ps = 1
     cluster = tf.train.ClusterSpec({'ps': workers[0:num_ps], 'worker': workers[num_ps:]}).as_cluster_def()

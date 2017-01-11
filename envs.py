@@ -12,7 +12,22 @@ from universe.spaces.vnc_event import keycode
 import time
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-universe.configure_logging()
+
+
+def config_universe_logging(enable_logfile=False, path=None):
+    """Configure logging in universe.
+
+    Args:
+        enable_logfile (bool): will the log be written to log
+        path (str|None): the full path to the desired log file
+            if no path is provide, and enable_logfile is True,
+            then the log will be written to /tmp/universe-<pid>
+    """
+    if enable_logfile:
+        universe.configure_logging(path)
+    else:
+        universe.configure_logging(False)
+
 
 def create_env(env_id, client_id, remotes, **kwargs):
     spec = gym.spec(env_id)
