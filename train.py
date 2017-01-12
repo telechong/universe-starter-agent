@@ -40,22 +40,24 @@ def create_commands(session, num_workers, dist_workers, remotes, env_id, logdir,
         sys.executable, 'worker.py',
         '--log-dir', logdir, '--env-id', env_id]
 
-    if dist_workers:
-        num_workers = len(dist_workers.split(','))
-        base_cmd += ['--dist-workers', dist_workers]
+    if dist_workers is None:
+        port = 12222
+        workers = ['127.0.0.1:' + str(port + w) for w in range(num_workers)]
     else:
-        base_cmd += ['--num-workers', str(num_workers)]
+        workers = dist_workers.split(',')
+
+    base_cmd += ['--workers', ','.join(workers)]
 
     if remotes is None:
-        remotes = ["1"] * num_workers
+        remotes = ["1"] * len(workers)
     else:
         remotes = remotes.split(',')
-        assert len(remotes) == num_workers
+        assert len(remotes) == len(workers)
 
-    cmds_map = [new_cmd(session, "ps", base_cmd + ["--job-name", "ps"], mode, logdir, shell)]
-
-    if not dist_workers:
-        for i in range(num_workers):
+    # if not dist_workers:
+        cmds_map = [new_cmd(session, "ps", base_cmd + ["--job-name", "ps"], mode, logdir, shell)]
+        num_ps = 1
+        for i in range(len(workers) - num_ps):
             cmds_map += [new_cmd(session,
                 "w-%d" % i, base_cmd + ["--job-name", "worker", "--task", str(i), "--remotes", remotes[i]], mode, logdir, shell)]
 
@@ -88,7 +90,7 @@ def create_commands(session, num_workers, dist_workers, remotes, env_id, logdir,
         for w in windows[1:]:
             cmds += ["tmux new-window -t {} -n {} {}".format(session, w, shell)]
         cmds += ["sleep 1"]
-    for window, cmd in cmds_map:
+    for _, cmd in cmds_map:
         cmds += [cmd]
 
     return cmds, notes

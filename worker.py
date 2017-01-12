@@ -84,30 +84,6 @@ def run(args, server):
     sv.stop()
     logger.info('reached %s steps. worker stopped.', global_step)
 
-def cluster_spec(num_workers, dist_workers, num_ps):
-    """
-More tensorflow setup for data parallelism
-"""
-    cluster = {}
-    port = 12222
-
-    all_ps = []
-    host = '127.0.0.1'
-    for _ in range(num_ps):
-        all_ps.append('{}:{}'.format(host, port))
-        port += 1
-    cluster['ps'] = all_ps
-
-    if dist_workers:
-        all_workers = dist_workers.split(',')
-    else:
-        all_workers = []
-        for _ in range(num_workers):
-            all_workers.append('{}:{}'.format(host, port))
-            port += 1
-
-    cluster['worker'] = all_workers
-    return cluster
 
 def main(_):
     """
@@ -119,11 +95,8 @@ Setting up Tensorflow for data parallel work
     parser.add_argument('--task', default=0, type=int, help='Task index')
     parser.add_argument('--job-name', default="worker", help='worker or ps')
 
-    worker_group = parser.add_mutually_exclusive_group(required=True)
-    worker_group.add_argument('-w', '--num-workers', default=1, type=int,
-                              help="Number of workers")
-    worker_group.add_argument('--dist-workers',
-                              help='Execute on distributed workers (e.g. --dist-workers someaddr:2222,someaddr2:2222).')
+    parser.add_argument('--workers',
+                        help='Execute on distributed tf (ps + worker) (e.g. --dist-workers someaddr:2222,someaddr2:2222).')
 
     parser.add_argument('--log-dir', default="/tmp/pong", help='Log directory path')
     parser.add_argument('--env-id', default="PongDeterministic-v3", help='Environment id')
@@ -133,10 +106,12 @@ Setting up Tensorflow for data parallel work
                              'rewarders to use (e.g. -r vnc://localhost:5900+15900,vnc://localhost:5901+15901)')
 
     args = parser.parse_args()
-    spec = cluster_spec(args.num_workers, args.dist_workers, 1)
-    cluster = tf.train.ClusterSpec(spec).as_cluster_def()
 
-    def shutdown(signal, frame):
+    workers = args.workers.split(',')
+    num_ps = 1
+    cluster = tf.train.ClusterSpec({'ps': workers[0:num_ps], 'worker': workers[num_ps:]}).as_cluster_def()
+
+    def shutdown(signal, _):
         logger.warn('Received signal %s: exiting', signal)
         sys.exit(128 + signal)
     signal.signal(signal.SIGHUP, shutdown)
