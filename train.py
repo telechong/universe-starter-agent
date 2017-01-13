@@ -55,11 +55,9 @@ def create_commands(session, num_workers, dist_workers, remotes, env_id, logdir,
         remotes = remotes.split(',')
         assert len(remotes) == len(workers) - num_ps
 
-    # if not dist_workers:
-        cmds_map = [new_cmd(session, "ps", base_cmd + ["--job-name", "ps"], mode, logdir, shell)]
-        for i in range(len(workers) - num_ps):
-            cmds_map += [new_cmd(session,
-                "w-%d" % i, base_cmd + ["--job-name", "worker", "--task", str(i), "--remotes", remotes[i]], mode, logdir, shell)]
+    cmds_map = [new_cmd(session, "ps", base_cmd + ["--job-name", "ps"], mode, logdir, shell)]
+    for i in range(len(workers) - num_ps):
+        cmds_map += [new_cmd(session, "w-%d" % i, base_cmd + ["--job-name", "worker", "--task", str(i), "--remotes", remotes[i]], mode, logdir, shell)]
 
     cmds_map += [new_cmd(session, "tb", ["tensorboard", "--logdir", logdir, "--port", "12345"], mode, logdir, shell)]
     if mode == 'tmux':
