@@ -96,7 +96,7 @@ Setting up Tensorflow for data parallel work
     parser.add_argument('--job-name', default="worker", help='worker or ps')
 
     parser.add_argument('--workers',
-                        help='Execute on distributed tf (ps + worker) (e.g. --dist-workers someaddr:2222,someaddr2:2222).')
+                        help='Execute on distributed tf (ps + worker) (e.g. --workers someaddr:2222,someaddr2:2222).')
 
     parser.add_argument('--log-dir', default="/tmp/pong", help='Log directory path')
     parser.add_argument('--env-id', default="PongDeterministic-v3", help='Environment id')
