@@ -8,7 +8,7 @@ import HTMLParser
 
 class _HtmlTableParser(HTMLParser.HTMLParser):
     def __init__(self):
-        # HTMLParser is old-style
+        # HTMLParser is old-style class
         HTMLParser.HTMLParser.__init__(self)
 
         self._current_tag = None
@@ -42,7 +42,7 @@ class _HtmlTableParser(HTMLParser.HTMLParser):
 
 
 class ApceraApi(object):
-    def __init__(self, apc='apc', verbose=True):
+    def __init__(self, apc='apc', verbose=False):
         self.apc = apc
         if verbose:
             self.stdout = None
@@ -66,7 +66,7 @@ class ApceraApi(object):
         if isinstance(cmd, str):
             cmd = cmd.split()
         cmd = [self.apc] + cmd + ['--batch']
-        print "Calling:", ' '.join(cmd)
+        print "\033[44;33mCalling\033[m", ' '.join(cmd)
         return subprocess.call(cmd, stdout=self.stdout)
 
     def docker_run(self, instance_name, image, args=None, docker_opt='-ae'):
@@ -90,7 +90,7 @@ class ApceraApi(object):
 
     @property
     def networks(self):
-        return self._apc_output('network list')
+        return [nw['Network Name'] for nw in self._apc_output('network list')]
 
     def network_get(self, network):
         return self._apc_output('network show {network}'.format(network=network))
@@ -122,6 +122,13 @@ class ApceraApi(object):
             if 'namespace' in line:
                 return line[line.find('\"') + 1:line.rfind('\"')]
 
+    def namespace_clear(self):
+        for job in self.jobs:
+            self.job_delete(job)
+
+        for network in self.networks:
+            self.network_delete(network)
+
 
 
 class Deployment(object):
@@ -143,48 +150,48 @@ class Deployment(object):
 
     @property
     def cluster_spec(self):
-        ps1 = [self.get_route('ps1') + ':' + str(self.grpc_port)]
-        workers = [self.get_route('worker' + str(i)) + ':' + str(self.grpc_port) for i in range(self.instances)]
-        gyms = [self.get_route('gym' + str(i)) for i in range(self.instances)]
+        ps = [self.get_discovery_address('ps0') + ':' + str(self.grpc_port)]
+        workers = [self.get_discovery_address('worker' + str(i)) + ':' + str(self.grpc_port) for i in range(self.instances)]
+        gyms = [self.get_discovery_address('gym' + str(i)) for i in range(self.instances)]
 
-        return {'ps': ps1, 'worker': workers, 'gym': gyms}
+        return {'ps': ps, 'worker': workers, 'gym': gyms}
 
     @property
     def cluster_spec_flat(self):
         return ','.join(self.cluster_spec['ps'] + self.cluster_spec['worker'])
 
-    def get_route(self, job):
+    def get_domain(self, job):
         return '{job}.{namespace}{domain}'.format(job=job,
-                                                   namespace='.'.join(reversed(self.apc.namespace.split('/'))),
-                                                   domain=self.apc.target)
+                                                  namespace='.'.join(reversed(self.apc.namespace.split('/'))),
+                                                  domain=self.apc.target)
+
+    def get_discovery_address(self, job):
+        return '{job}.apcera.local'.format(job=job)
 
     def deploy(self):
-        # Delete jobs
-        for job in self.apc.jobs:
-            self.apc.job_delete(job)
+        self.apc.namespace_clear()
 
-        # Delete + Create network
-        if self.apc.network_get(self.deployment_name):
-            self.apc.network_delete(self.deployment_name)
         self.apc.network_create(self.deployment_name)
 
-        # Create + start new jobs
-        self.start_instances()
+        self.create_instances()
 
+        # We need to join the network rather than adding -net to docker run
+        # This is due to that we want --discovery-address (which is only available on network join
+        for job in self.apc.jobs:
+            self.apc.network_join(self.deployment_name, job)
 
-    def start_instances(self):
-        route = ' -r http://{}'
+        for job in self.apc.jobs:
+            self.apc.job_start(job)
+
+    def create_instances(self):
         for i, _ in enumerate(self.cluster_spec['gym']):
             name = 'gym' + str(i)
-            ports = ' '.join(['-p ' + port for port in self.gym_ports])
-            self.apc.docker_run('gym' + str(i), self.gym_image, docker_opt='{} {} -net {}'.format(ports,
-                                                                                                             route.format(self.get_route(name)),
-                                                                                                             self.deployment_name))
+            docker_gym_opt = '--no-start {port} {route}'.format(port=' '.join(['-p ' + port for port in self.gym_ports]),
+                                                                route=' -r http://' + self.get_domain(name))
+            self.apc.docker_run(name, self.gym_image, docker_opt=docker_gym_opt)
 
         worker_cmd = '/usr/bin/python /universe-starter-agent/worker.py '
-        docker_worker_opt = '-ae -p ' + self.grpc_port
-        docker_worker_opt += ' -net {}'.format(self.deployment_name)
-        docker_worker_opt += route
+        docker_worker_opt = '-ae --no-start -p {port}'.format(port=self.grpc_port)
 
         for i, _ in enumerate(self.cluster_spec['ps']):
             name = 'ps' + str(i)
@@ -192,7 +199,7 @@ class Deployment(object):
             args += '--log-dir {logdir} '.format(logdir=self.log_dir)
             args += '--env-id {game} '.format(game=self.game)
             args += '--workers {workers}'.format(workers=self.cluster_spec_flat)
-            self.apc.docker_run(name, self.agent_image, docker_opt=docker_worker_opt.format(self.get_route(name)), args=args)
+            self.apc.docker_run(name, self.agent_image, docker_opt=docker_worker_opt.format(self.get_domain(name)), args=args)
 
         for i, _ in enumerate(self.cluster_spec['worker']):
             name = 'worker' + str(i)
@@ -202,16 +209,16 @@ class Deployment(object):
             args += '--workers {workers} '.format(workers=self.cluster_spec_flat)
             args += '--task {id_} '.format(id_=i)
             args += '--remotes vnc://{gym}:{ports}'.format(gym=self.cluster_spec['gym'][i], ports='+'.join(self.gym_ports))
-            self.apc.docker_run(name, self.agent_image, docker_opt=docker_worker_opt.format(self.get_route(name)), args=args)
+            self.apc.docker_run(name, self.agent_image, docker_opt=docker_worker_opt, args=args)
 
 
 def deploy(args):
-    depl = Deployment(args.env_id, args.instances, args.deployment_name)
+    depl = Deployment(args.env_id, args.instances, args.deployment_name, apc=ApceraApi(verbose=args.verbose))
     depl.deploy()
 
 def print_(args):
     apc = ApceraApi()
-    print apc.cluster_spec
+    print apc.networks
 
 
 def main():
