@@ -66,13 +66,15 @@ class ApceraApi(object):
         if isinstance(cmd, str):
             cmd = cmd.split()
         cmd = [self.apc] + cmd + ['--batch']
-        print "\033[44;33mCalling\033[m", ' '.join(cmd)
+        print "\033[92m[Calling]:\033[m", ' '.join(cmd)
         return subprocess.call(cmd, stdout=self.stdout)
 
-    def docker_run(self, instance_name, image, args=None, docker_opt='-ae'):
-        docker_cmd = 'docker run {name} {docker_opt} -i {image}'.format(name=instance_name,
-                                                                        docker_opt=docker_opt,
-                                                                        image=image).split()
+    def docker_run(self, instance_name, image, args=None, docker_opt='-ae', memory=None):
+        memory = '-m ' + str(memory) if memory else ''
+        docker_cmd = 'docker run {name} {docker_opt} {mem} -i {image}'.format(name=instance_name,
+                                                                              docker_opt=docker_opt,
+                                                                              mem=memory,
+                                                                              image=image).split()
         if args:
             docker_cmd += ['-s', args]
 
@@ -188,7 +190,7 @@ class Deployment(object):
             name = 'gym' + str(i)
             docker_gym_opt = '--no-start {port} {route}'.format(port=' '.join(['-p ' + port for port in self.gym_ports]),
                                                                 route=' -r http://' + self.get_domain(name))
-            self.apc.docker_run(name, self.gym_image, docker_opt=docker_gym_opt)
+            self.apc.docker_run(name, self.gym_image, docker_opt=docker_gym_opt, memory='1G')
 
         worker_cmd = '/usr/bin/python /universe-starter-agent/worker.py '
         docker_worker_opt = '-ae --no-start -p {port}'.format(port=self.grpc_port)
@@ -199,7 +201,11 @@ class Deployment(object):
             args += '--log-dir {logdir} '.format(logdir=self.log_dir)
             args += '--env-id {game} '.format(game=self.game)
             args += '--workers {workers}'.format(workers=self.cluster_spec_flat)
-            self.apc.docker_run(name, self.agent_image, docker_opt=docker_worker_opt.format(self.get_domain(name)), args=args)
+            self.apc.docker_run(name,
+                                self.agent_image,
+                                docker_opt=docker_worker_opt,
+                                args=args,
+                                memory='1.5G')
 
         for i, _ in enumerate(self.cluster_spec['worker']):
             name = 'worker' + str(i)
@@ -209,7 +215,11 @@ class Deployment(object):
             args += '--workers {workers} '.format(workers=self.cluster_spec_flat)
             args += '--task {id_} '.format(id_=i)
             args += '--remotes vnc://{gym}:{ports}'.format(gym=self.cluster_spec['gym'][i], ports='+'.join(self.gym_ports))
-            self.apc.docker_run(name, self.agent_image, docker_opt=docker_worker_opt, args=args)
+            self.apc.docker_run(name,
+                                self.agent_image,
+                                docker_opt=docker_worker_opt,
+                                args=args,
+                                memory='1.5G')
 
 
 def deploy(args):
