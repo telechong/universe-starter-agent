@@ -164,8 +164,8 @@ class ApceraApi(object):
 
 class Deployment(object):
     def __init__(self, game, instances, deployment_name, apc=ApceraApi(),
-                 agent_image='jderehag/apcera-universe-starter-agent',
-                 gym_image='telechong/universe.flashgames:0.20.21',
+                 agent_image='quay.io/telechong/universe-agent',
+                 gym_image='quay.io/telechong/universe-flashgames',
                  log_dir='/mnt/shared',
                  grpc_port='2222',
                  gym_ports=('5900', '15900')):
@@ -254,7 +254,7 @@ class Deployment(object):
                                 self.agent_image,
                                 docker_opt=docker_worker_opt + docker_ps_opt,
                                 args=args,
-                                memory='1.5G')
+                                memory='1G')
             self.apc.service_bind(nfs_service_name, name, '--mountpath ' + self.log_dir)
 
         for i, _ in enumerate(self.cluster_spec['worker']):
@@ -269,7 +269,7 @@ class Deployment(object):
                                 self.agent_image,
                                 docker_opt=docker_worker_opt,
                                 args=args,
-                                memory='1.5G')
+                                memory='1G')
             self.apc.service_bind(nfs_service_name, name, '--mountpath ' + self.log_dir)
 
 
