@@ -188,22 +188,31 @@ class Deployment(object):
     def create_instances(self):
         for i, _ in enumerate(self.cluster_spec['gym']):
             name = 'gym' + str(i)
-            docker_gym_opt = '--no-start {port} {route}'.format(port=' '.join(['-p ' + port for port in self.gym_ports]),
-                                                                route=' -r http://' + self.get_domain(name))
+            ports = ' '.join(['-p ' + port for port in self.gym_ports])
+            route = ' -r http://' + self.get_domain(name)
+            docker_gym_opt = '--no-start --timeout 300 {port} {route}'.format(port=ports,
+                                                                              route=route)
+
             self.apc.docker_run(name, self.gym_image, docker_opt=docker_gym_opt, memory='1G')
 
         worker_cmd = '/usr/bin/python /universe-starter-agent/worker.py '
-        docker_worker_opt = '-ae --no-start -p {port}'.format(port=self.grpc_port)
+        docker_worker_opt = '-ae --no-start -p {port} '.format(port=self.grpc_port)
 
         for i, _ in enumerate(self.cluster_spec['ps']):
             name = 'ps' + str(i)
-            args = worker_cmd + '--job-name ps '
+            tb_port = '12345'
+            args = '/bin/sh -c "nohup tensorboard --logdir {logdir} --port {port} & '.format(port=tb_port,
+                                                                                             logdir=self.log_dir)
+            args += worker_cmd + '--job-name ps '
             args += '--log-dir {logdir} '.format(logdir=self.log_dir)
             args += '--env-id {game} '.format(game=self.game)
             args += '--workers {workers}'.format(workers=self.cluster_spec_flat)
+            args += '"'
+            docker_ps_opt = '-p {port} -r http://{domain}'.format(domain=self.get_domain(name),
+                                                                  port=tb_port)
             self.apc.docker_run(name,
                                 self.agent_image,
-                                docker_opt=docker_worker_opt,
+                                docker_opt=docker_worker_opt + docker_ps_opt,
                                 args=args,
                                 memory='1.5G')
 
@@ -230,6 +239,10 @@ def print_(args):
     apc = ApceraApi()
     print apc.networks
 
+def clean(args):
+    apc = ApceraApi()
+    apc.namespace_clear()
+
 
 def main():
     parser = argparse.ArgumentParser(add_help=True, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -246,8 +259,14 @@ def main():
     parser_deploy.add_argument('deployment_name')
     parser_deploy.set_defaults(func=deploy)
 
+    # Print
     parser_print = subparsers.add_parser('print')
     parser_print.set_defaults(func=print_)
+
+    # Clean
+    parser_clean = subparsers.add_parser('clean')
+    parser_clean.set_defaults(func=clean)
+
 
     args = parser.parse_args()
 
