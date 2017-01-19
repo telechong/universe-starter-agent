@@ -62,10 +62,14 @@ class ApceraApi(object):
         else:
             return output
 
-    def _apc(self, cmd):
+    def _apc(self, cmd, as_batch=True):
         if isinstance(cmd, str):
             cmd = cmd.split()
-        cmd = [self.apc] + cmd + ['--batch']
+        cmd = [self.apc] + cmd
+
+        if as_batch:
+            cmd += ['--batch']
+
         print "\033[92m[Calling]:\033[m", ' '.join(cmd)
         return subprocess.call(cmd, stdout=self.stdout)
 
@@ -79,6 +83,29 @@ class ApceraApi(object):
             docker_cmd += ['-s', args]
 
         return self._apc(docker_cmd)
+
+    @property
+    def providers(self):
+        return self._apc_output('provider list -ns /')
+
+    @property
+    def services(self):
+        return [service['Name'] for service in self._apc_output('service list')]
+
+    def service_create(self, service_name, provider, description=''):
+        return self._apc('service create {name} --provider {provider} {desc}'.format(name=service_name,
+                                                                                     provider=provider,
+                                                                                     desc=description))
+
+    def service_delete(self, service_name):
+        return self._apc('service delete {name}'.format(name=service_name))
+
+    def service_bind(self, service_name, job, custom_params=None):
+        custom_params = ' -- ' + custom_params if custom_params else ''
+        return self._apc('service bind {name} --batch --job {job} {custom_params}'.format(name=service_name,
+                                                                                          job=job,
+                                                                                          custom_params=custom_params),
+                                                                                          as_batch=False)
 
     @property
     def jobs(self):
@@ -131,13 +158,15 @@ class ApceraApi(object):
         for network in self.networks:
             self.network_delete(network)
 
+        for service in self.services:
+            self.service_delete(service)
 
 
 class Deployment(object):
     def __init__(self, game, instances, deployment_name, apc=ApceraApi(),
                  agent_image='jderehag/apcera-universe-starter-agent',
                  gym_image='telechong/universe.flashgames:0.20.21',
-                 log_dir='/tmp/agent',
+                 log_dir='/mnt/shared',
                  grpc_port='2222',
                  gym_ports=('5900', '15900')):
         self.game = game
@@ -185,15 +214,26 @@ class Deployment(object):
         for job in self.apc.jobs:
             self.apc.job_start(job)
 
+    def create_nfs_service(self, name):
+        nfs_providers = [provider for provider in self.apc.providers
+                            if provider['Type'] == 'nfs' and provider['Name'] in ('apcfs-ha', 'apcfsV4')]
+
+        assert len(nfs_providers) >= 1, 'No valid nfs providers found!'
+        provider = nfs_providers[0] # Take first valid provider
+        self.apc.service_create(name, provider['Namespace'] + '::' + provider['Name'])
+
     def create_instances(self):
+        nfs_service_name = self.deployment_name + '_nfs'
+        self.create_nfs_service(nfs_service_name)
+
         for i, _ in enumerate(self.cluster_spec['gym']):
             name = 'gym' + str(i)
             ports = ' '.join(['-p ' + port for port in self.gym_ports])
             route = ' -r http://' + self.get_domain(name)
             docker_gym_opt = '--no-start --timeout 300 {port} {route}'.format(port=ports,
                                                                               route=route)
-
             self.apc.docker_run(name, self.gym_image, docker_opt=docker_gym_opt, memory='1G')
+            self.apc.service_bind(nfs_service_name, name, '--mountpath ' + self.log_dir)
 
         worker_cmd = '/usr/bin/python /universe-starter-agent/worker.py '
         docker_worker_opt = '-ae --no-start -p {port} '.format(port=self.grpc_port)
@@ -215,6 +255,7 @@ class Deployment(object):
                                 docker_opt=docker_worker_opt + docker_ps_opt,
                                 args=args,
                                 memory='1.5G')
+            self.apc.service_bind(nfs_service_name, name, '--mountpath ' + self.log_dir)
 
         for i, _ in enumerate(self.cluster_spec['worker']):
             name = 'worker' + str(i)
@@ -229,6 +270,7 @@ class Deployment(object):
                                 docker_opt=docker_worker_opt,
                                 args=args,
                                 memory='1.5G')
+            self.apc.service_bind(nfs_service_name, name, '--mountpath ' + self.log_dir)
 
 
 def deploy(args):
@@ -237,7 +279,7 @@ def deploy(args):
 
 def print_(args):
     apc = ApceraApi()
-    print apc.networks
+    print apc.providers
 
 def clean(args):
     apc = ApceraApi()
