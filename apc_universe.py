@@ -117,6 +117,9 @@ class ApceraApi(object):
     def job_delete(self, instance_name):
         return self._apc('job delete {name}'.format(name=instance_name))
 
+    def job_attract(self, job, to_job):
+        return self._apc('job attract {job} --to {to_job} --hard'.format(job=job, to_job=to_job))
+
     @property
     def networks(self):
         return [nw['Network Name'] for nw in self._apc_output('network list')]
@@ -170,7 +173,9 @@ class Deployment(object):
                  grpc_port='2222',
                  gym_ports=('5900', '15900')):
         self.game = game
-        self.instances = instances
+        # instances = [('vehicle1', 'tag1'), ('vehicle2', 'tag2')]
+        self.instances = [{'gym': inst, 'worker': inst + 'worker', 'tag': tag} for inst, tag in instances]
+
         self.deployment_name = deployment_name
         self.apc = apc
         self.agent_image = agent_image
@@ -182,8 +187,8 @@ class Deployment(object):
     @property
     def cluster_spec(self):
         ps = [self.get_discovery_address('ps0') + ':' + str(self.grpc_port)]
-        workers = [self.get_discovery_address('worker' + str(i)) + ':' + str(self.grpc_port) for i in range(self.instances)]
-        gyms = [self.get_discovery_address('gym' + str(i)) for i in range(self.instances)]
+        workers = [self.get_discovery_address(inst['worker']) + ':' + str(self.grpc_port) for inst in self.instances]
+        gyms = [self.get_discovery_address(inst['gym']) for inst in self.instances]
 
         return {'ps': ps, 'worker': workers, 'gym': gyms}
 
@@ -211,27 +216,34 @@ class Deployment(object):
         for job in self.apc.jobs:
             self.apc.network_join(self.deployment_name, job)
 
+        # We need to attrct jobs manually since attract is only available as a job operation rather
+        # than as part of a create procedure
+        for inst in self.instances:
+            self.apc.job_attract(inst['worker'], inst['gym'])
+
         for job in self.apc.jobs:
             self.apc.job_start(job)
 
     def create_nfs_service(self, name):
-        nfs_providers = [provider for provider in self.apc.providers
-                            if provider['Type'] == 'nfs' and provider['Name'] in ('apcfs-ha', 'apcfsV4')]
+        nfs_providers = [provider for provider in self.apc.providers if provider['Type'] == 'nfs']
 
         assert len(nfs_providers) >= 1, 'No valid nfs providers found!'
-        provider = nfs_providers[0] # Take first valid provider
+        provider = nfs_providers[0]  # Take first valid provider
         self.apc.service_create(name, provider['Namespace'] + '::' + provider['Name'])
 
     def create_instances(self):
         nfs_service_name = self.deployment_name + '_nfs'
         self.create_nfs_service(nfs_service_name)
 
-        for i, _ in enumerate(self.cluster_spec['gym']):
-            name = 'gym' + str(i)
+        for inst in self.instances:
+            name = inst['gym']
+            tag = inst['tag']
             ports = ' '.join(['-p ' + port for port in self.gym_ports])
             route = ' -r http://' + self.get_domain(name)
-            docker_gym_opt = '--no-start --timeout 300 {port} {route}'.format(port=ports,
-                                                                              route=route)
+            tag = '-ht ' + tag if tag else ''
+            docker_gym_opt = '--no-start --timeout 300 {tag} {port} {route}'.format(tag=tag,
+                                                                                    port=ports,
+                                                                                    route=route)
             self.apc.docker_run(name, self.gym_image, docker_opt=docker_gym_opt, memory='1G')
             self.apc.service_bind(nfs_service_name, name, '--mountpath ' + self.log_dir)
 
@@ -250,31 +262,25 @@ class Deployment(object):
             args += '"'
             docker_ps_opt = '-p {port} -r http://{domain}'.format(domain=self.get_domain(name),
                                                                   port=tb_port)
-            self.apc.docker_run(name,
-                                self.agent_image,
-                                docker_opt=docker_worker_opt + docker_ps_opt,
-                                args=args,
-                                memory='1G')
+            self.apc.docker_run(name, self.agent_image, docker_opt=docker_worker_opt + docker_ps_opt, args=args, memory='1G')
             self.apc.service_bind(nfs_service_name, name, '--mountpath ' + self.log_dir)
 
-        for i, _ in enumerate(self.cluster_spec['worker']):
-            name = 'worker' + str(i)
+        for i, inst in enumerate(self.instances):
+            name = inst['worker']
+            tag = inst['tag']
             args = worker_cmd + '--job-name worker '
             args += '--log-dir {logdir} '.format(logdir=self.log_dir)
             args += '--env-id {game} '.format(game=self.game)
             args += '--workers {workers} '.format(workers=self.cluster_spec_flat)
             args += '--task {id_} '.format(id_=i)
             args += '--remotes vnc://{gym}:{ports}'.format(gym=self.cluster_spec['gym'][i], ports='+'.join(self.gym_ports))
-            self.apc.docker_run(name,
-                                self.agent_image,
-                                docker_opt=docker_worker_opt,
-                                args=args,
-                                memory='1G')
+            docker_worker_opt += '-ht ' + tag if tag else ''
+            self.apc.docker_run(name, self.agent_image, docker_opt=docker_worker_opt, args=args, memory='1G')
             self.apc.service_bind(nfs_service_name, name, '--mountpath ' + self.log_dir)
 
 
 def deploy(args):
-    depl = Deployment(args.env_id, args.instances, args.deployment_name, apc=ApceraApi(verbose=args.verbose))
+    depl = Deployment(args.env_id, args.instances, args.deployment, apc=ApceraApi(verbose=args.verbose))
     depl.deploy()
 
 def print_(args):
@@ -285,6 +291,14 @@ def clean(args):
     apc = ApceraApi()
     apc.namespace_clear()
 
+class InstanceParser(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        if len(values) == 1 and values[0].isdigit():
+            instance_tuples = [('vehicle' + str(i), None) for i in range(int(values[0]))]
+        else:
+            instance_tuples = [value.split(':') for value in values]
+
+        setattr(namespace, self.dest, instance_tuples)
 
 def main():
     parser = argparse.ArgumentParser(add_help=True, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -296,9 +310,12 @@ def main():
 
     # Deploy
     parser_deploy = subparsers.add_parser('deploy', help='Deploys a cluster of RL agents')
-    parser_deploy.add_argument('-i', '--instances', type=int, default=4)
     parser_deploy.add_argument('-e', '--env-id', default='flashgames.DuskDrive-v0')
-    parser_deploy.add_argument('deployment_name')
+    parser_deploy.add_argument('-d', '--deployment', default='universe', help='An arbitrary deployment name')
+
+    parser_deploy.add_argument('instances', nargs='*', default=['4'], action=InstanceParser,
+                              help=('Can optionally be a number, OR '
+                                    'pairs of instance names and their tags vehicle1:plano vehicle2:sj'))
     parser_deploy.set_defaults(func=deploy)
 
     # Print
