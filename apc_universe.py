@@ -1,15 +1,16 @@
 #!/usr/bin/env python
-
+from __future__ import print_function
 import argparse
 import os
 import subprocess
-import HTMLParser
+from multiprocessing import Pool
+from future.moves.html.parser import HTMLParser
 
 
-class _HtmlTableParser(HTMLParser.HTMLParser):
+class _HtmlTableParser(HTMLParser):
     def __init__(self):
         # HTMLParser is old-style class
-        HTMLParser.HTMLParser.__init__(self)
+        HTMLParser.__init__(self)
 
         self._current_tag = None
         self._current_data = None
@@ -51,7 +52,7 @@ class ApceraApi(object):
 
     def _apc_output(self, cmd, table=True):
         try:
-            output = subprocess.check_output([self.apc] + cmd.split() + ['--html', '--batch'])
+            output = subprocess.check_output([self.apc] + cmd.split() + ['--html', '--batch']).decode("utf-8")
         except subprocess.CalledProcessError:
             return None
 
@@ -70,7 +71,7 @@ class ApceraApi(object):
         if as_batch:
             cmd += ['--batch']
 
-        print "\033[92m[Calling]:\033[m", ' '.join(cmd)
+        print("\033[92m[Calling]:\033[m", ' '.join(cmd))
         return subprocess.call(cmd, stdout=self.stdout)
 
     def docker_run(self, instance_name, image, args=None, docker_opt='-ae', memory=None):
@@ -221,8 +222,7 @@ class Deployment(object):
         for inst in self.instances:
             self.apc.job_attract(inst['worker'], inst['gym'])
 
-        for job in self.apc.jobs:
-            self.apc.job_start(job)
+        self.start_jobs()
 
     def create_nfs_service(self, name):
         nfs_providers = [provider for provider in self.apc.providers if provider['Type'] == 'nfs']
@@ -232,9 +232,12 @@ class Deployment(object):
         self.apc.service_create(name, provider['Namespace'] + '::' + provider['Name'])
 
     def create_instances(self):
-        nfs_service_name = self.deployment_name + '_nfs'
-        self.create_nfs_service(nfs_service_name)
+        self.create_nfs_service(self._get_nfs_service_name())
 
+        pool = Pool(processes=(len(self.cluster_spec['gym']) +
+                               len(self.cluster_spec['ps']) +
+                               len(self.cluster_spec['worker'])))
+        pool_args = []
         for inst in self.instances:
             name = inst['gym']
             tag = inst['tag']
@@ -244,8 +247,13 @@ class Deployment(object):
             docker_gym_opt = '--no-start --timeout 300 {tag} {port} {route}'.format(tag=tag,
                                                                                     port=ports,
                                                                                     route=route)
-            self.apc.docker_run(name, self.gym_image, docker_opt=docker_gym_opt, memory='1G')
-            self.apc.service_bind(nfs_service_name, name, '--mountpath ' + self.log_dir)
+            pool_args.append(dict(name=name,
+                                  image=self.gym_image,
+                                  args=None,
+                                  docker_opt=docker_gym_opt,
+                                  memory='1G',
+                                  nfs_service_name=self._get_nfs_service_name(),
+                                  log_dir=self.log_dir))
 
         worker_cmd = '/usr/bin/python /universe-starter-agent/worker.py '
         docker_worker_opt = '-ae --no-start -p {port} '.format(port=self.grpc_port)
@@ -262,8 +270,13 @@ class Deployment(object):
             args += '"'
             docker_ps_opt = '-p {port} -r http://{domain}'.format(domain=self.get_domain(name),
                                                                   port=tb_port)
-            self.apc.docker_run(name, self.agent_image, docker_opt=docker_worker_opt + docker_ps_opt, args=args, memory='1G')
-            self.apc.service_bind(nfs_service_name, name, '--mountpath ' + self.log_dir)
+            pool_args.append(dict(name=name,
+                                  image=self.agent_image,
+                                  args=args,
+                                  docker_opt=docker_worker_opt + docker_ps_opt,
+                                  memory='1G',
+                                  nfs_service_name=self._get_nfs_service_name(),
+                                  log_dir=self.log_dir))
 
         for i, inst in enumerate(self.instances):
             name = inst['worker']
@@ -275,8 +288,49 @@ class Deployment(object):
             args += '--task {id_} '.format(id_=i)
             args += '--remotes vnc://{gym}:{ports}'.format(gym=self.cluster_spec['gym'][i], ports='+'.join(self.gym_ports))
             docker_worker_opt += '-ht ' + tag if tag else ''
-            self.apc.docker_run(name, self.agent_image, docker_opt=docker_worker_opt, args=args, memory='1G')
-            self.apc.service_bind(nfs_service_name, name, '--mountpath ' + self.log_dir)
+            pool_args.append(dict(name=name,
+                                  image=self.agent_image,
+                                  args=args,
+                                  docker_opt=docker_worker_opt,
+                                  memory='1G',
+                                  nfs_service_name=self._get_nfs_service_name(),
+                                  log_dir=self.log_dir))
+        pool.map(_create_instance, pool_args)
+
+    def start_jobs(self):
+        pool1 = Pool(processes=len(self.apc.jobs))
+        pool1_args = []
+        pool2 = Pool(processes=len(self.apc.jobs))
+        pool2_args = []
+
+        workers = [inst['worker'] for inst in self.instances]
+        for job in self.apc.jobs:
+            if job not in workers:
+                pool1_args.append(job)
+            else:
+                pool2_args.append(job)
+        pool1.map(_start_apc_job, pool1_args)
+        pool2.map(_start_apc_job, pool2_args)
+
+    def _get_nfs_service_name(self):
+        return self.deployment_name + '_nfs'
+
+
+def _create_instance(args):
+    apc = ApceraApi()
+    apc.docker_run(args['name'],
+                   args['image'],
+                   args=args['args'],
+                   docker_opt=args['docker_opt'],
+                   memory=args['memory'])
+    apc.service_bind(args['nfs_service_name'],
+                     args['name'],
+                     '--mountpath ' + args['log_dir'])
+
+
+def _start_apc_job(job):
+    apc = ApceraApi()
+    apc.job_start(job)
 
 
 def deploy(args):
@@ -285,7 +339,7 @@ def deploy(args):
 
 def print_(args):
     apc = ApceraApi()
-    print apc.providers
+    print(apc.providers)
 
 def clean(args):
     apc = ApceraApi()
