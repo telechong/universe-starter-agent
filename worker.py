@@ -48,10 +48,10 @@ def run(args, server):
         ses.run(init_all_op)
 
     config = tf.ConfigProto(device_filters=["/job:ps", "/job:worker/task:{}/cpu:0".format(args.task)])
-    logdir = os.path.join(args.log_dir, 'train')
+    logdir = os.path.join(args.log_dir, 'vehicle')
 
     if use_tf12_api:
-        summary_writer = tf.summary.FileWriter(logdir + "_%d" % args.task)
+        summary_writer = tf.summary.FileWriter(logdir + "%d" % args.task)
     else:
         summary_writer = tf.train.SummaryWriter(logdir + "_%d" % args.task)
 
